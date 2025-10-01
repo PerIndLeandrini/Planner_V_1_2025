@@ -276,7 +276,7 @@ else:
 # 2) Carica Pianificazione ESISTENTE (CSV) e mostra TUTTO come in pianificazione
 # =========================
 st.markdown("---")
-st.header("📂 Carica Pianificazione Esistente (vedi tutto + modifica)")
+st.header("📂 Carica Pianificazione Esistente")
 
 csv_file = st.file_uploader("Carica un file CSV di pianificazione esistente", type=[".csv"], key="csv")
 
@@ -384,3 +384,4 @@ if csv_file:
 
             # Refresh preview
             st.dataframe(df_pianif, use_container_width=True, height=300)
+
