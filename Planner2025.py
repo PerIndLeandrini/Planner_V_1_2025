@@ -1,9 +1,11 @@
-import streamlit as st
-import pandas as pd
 import os
 from datetime import datetime
-import plotly.express as px
+
 import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from streamlit_plotly_events import plotly_events
 
 # --- Config ---
 st.set_page_config(page_title="Pianificazione Produzione", layout="wide")
@@ -79,6 +81,7 @@ def to_str_noint_if_int(x):
         return str(int(x)) if float(x).is_integer() else str(x)
     return str(x).strip()
 
+
 # =========================
 # 1) Caricamento file Excel ORDINI per pianificare (flusso classico)
 # =========================
@@ -146,16 +149,7 @@ if uploaded_file:
             )
 
             riga = riga_match.loc[index_riga]
-            st.markdown("### 📄 Riga selezionata per la pianificazione")
-            dettaglio = riga.to_dict()
-            dettaglio["Valore"] = fmt_eur(dettaglio.get("Valore_num"))
-            for k in ["Data consegna originale", "Data consegna ritrattata"]:
-                if isinstance(dettaglio.get(k), pd.Timestamp):
-                    dettaglio[k] = dettaglio[k].strftime("%d/%m/%Y") if pd.notna(dettaglio[k]) else ""
-            st.write(dettaglio)
-
             st.markdown("### 🛠️ Pianificazione Produzione")
-            data_inizio = st.date_input("Data inizio produzione", datetime.today(), format="DD/MM/YYYY")
 
             attivita_possibili = [
                 "Progettazione", "Preparazione materiale", "F1", "F2", "F3", "F4", "F5", "F6",
@@ -190,7 +184,6 @@ if uploaded_file:
                 data_fine = st.date_input(f"Data fine attività {i+1}", datetime.today(), format="DD/MM/YYYY", key=f"dfine_{i}")
                 completamento = st.slider(f"Completamento attività {i+1} (%)", 0, 100, 0, step=5, key=f"comp_{i}")
 
-                # Auto-stato: se completamento 100 -> Completato
                 if completamento == 100:
                     stato = "Completato"
 
@@ -212,7 +205,7 @@ if uploaded_file:
             st.markdown("### 💾 Salvataggio Pianificazione")
             if st.button("Salva pianificazione su CSV"):
                 output_data = []
-                for attivita in pianificazione:
+                for att in pianificazione:
                     output_data.append({
                         "MATERIALE": riga["MATERIALE"],
                         "Revisione": riga["Revisione"],
@@ -225,13 +218,21 @@ if uploaded_file:
                         "Data consegna originale": riga["Data consegna originale"].strftime("%d/%m/%Y") if pd.notna(riga["Data consegna originale"]) else "",
                         "Data consegna ritrattata": riga["Data consegna ritrattata"].strftime("%d/%m/%Y") if pd.notna(riga["Data consegna ritrattata"]) else "",
                         "Note": riga["Note"],
-                        **attivita
+                        **att
                     })
                 df_out = pd.DataFrame(output_data)
                 os.makedirs("dati_pianificati", exist_ok=True)
                 nome_file = f"dati_pianificati/pianificazione_{codice_sel}.csv"
                 df_out.to_csv(nome_file, index=False, encoding="utf-8-sig")
                 st.success(f"Dati salvati in {nome_file}")
+
+                # download immediato
+                st.download_button(
+                    "⬇️ Scarica pianificazione (CSV)",
+                    data=df_out.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"pianificazione_{codice_sel}.csv",
+                    mime="text/csv"
+                )
 
             st.markdown("### 📆 Gantt delle Attività")
             df_gantt = pd.DataFrame(pianificazione)
@@ -240,13 +241,8 @@ if uploaded_file:
                 df_gantt["Fine"]   = pd.to_datetime(df_gantt["Data fine"],   format="%d/%m/%Y", errors="coerce")
                 df_gantt = df_gantt.dropna(subset=["Inizio","Fine"])
                 if not df_gantt.empty:
-                    # etichetta avanzamento
                     df_gantt["LabelAvanzamento"] = df_gantt["Completamento"].fillna(0).astype(int).astype(str) + "%"
-
-                    # ordinamento per data d'inizio (più vecchia in alto)
-                    order = pd.Index(
-                        df_gantt.sort_values(["Inizio", "Fine", "Attività"])["Attività"]
-                    ).unique().tolist()
+                    order = pd.Index(df_gantt.sort_values(["Inizio", "Fine", "Attività"])["Attività"]).unique().tolist()
 
                     fig = px.timeline(
                         df_gantt,
@@ -257,15 +253,8 @@ if uploaded_file:
                         text="LabelAvanzamento"
                     )
                     fig.update_traces(textposition="inside", insidetextanchor="middle")
-
-                    # applica l'ordine al verticale (y)
                     fig.update_yaxes(categoryorder="array", categoryarray=order, autorange="reversed")
-
-                    fig.update_layout(
-                        xaxis_title="Data",
-                        yaxis_title="Attività pianificata",
-                        title=f"Gantt - {codice_sel}"
-                    )
+                    fig.update_layout(xaxis_title="Data", yaxis_title="Attività pianificata", title=f"Gantt - {codice_sel}")
                     st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("⚠️ Nessuna riga trovata per il materiale selezionato.")
@@ -273,10 +262,10 @@ else:
     st.info("📂 Carica un file Excel per iniziare (oppure vai sotto e carica un CSV esistente).")
 
 # =========================
-# 2) Carica Pianificazione ESISTENTE (CSV) e mostra TUTTO come in pianificazione
+# 2) Carica Pianificazione ESISTENTE (CSV) e modifica via Gantt (CLICK-TO-EDIT)
 # =========================
 st.markdown("---")
-st.header("📂 Carica Pianificazione Esistente")
+st.header("📂 Carica Pianificazione Esistente (click sul Gantt per modificare)")
 
 csv_file = st.file_uploader("Carica un file CSV di pianificazione esistente", type=[".csv"], key="csv")
 
@@ -286,7 +275,6 @@ if csv_file:
     # Normalizza date per la vista e per il Gantt
     for col in ["Data inizio", "Data fine"]:
         if col in df_pianif.columns:
-            # mantieni sia stringa formattata per tabella, sia colonne datetime per gantt
             dt = pd.to_datetime(df_pianif[col], dayfirst=True, errors="coerce")
             df_pianif[col] = dt.dt.strftime("%d/%m/%Y").fillna("")
 
@@ -296,26 +284,23 @@ if csv_file:
     st.subheader("📋 Pianificazione caricata (tutte le righe)")
     st.dataframe(df_pianif, use_container_width=True, height=380)
 
-    # Selezione per MATERIALE (come nel flusso di pianificazione)
+    # Selezione per MATERIALE
     materiali = df_pianif["MATERIALE"].astype(str).str.strip().unique().tolist()
     mat_sel = st.selectbox("Seleziona materiale per dettaglio e Gantt", materiali)
 
     df_mat = df_pianif[df_pianif["MATERIALE"].astype(str).str.strip() == str(mat_sel).strip()].copy()
 
-    # Gantt per il materiale selezionato
-    st.markdown("### 📆 Gantt del materiale selezionato")
+    st.markdown("### 📆 Gantt del materiale selezionato (clicca una barra)")
     if not df_mat.empty and {"Data inizio","Data fine","Attività"}.issubset(df_mat.columns):
         gantt = df_mat.copy()
         gantt["Inizio"] = pd.to_datetime(gantt["Data inizio"], dayfirst=True, errors="coerce")
         gantt["Fine"]   = pd.to_datetime(gantt["Data fine"],   dayfirst=True, errors="coerce")
         gantt = gantt.dropna(subset=["Inizio","Fine"])
         if not gantt.empty:
+            # Indice reale per update della riga corretta
+            gantt["IdxReale"] = gantt.index
             gantt["LabelAvanzamento"] = gantt["Completamento"].fillna(0).astype(int).astype(str) + "%"
-
-            # ordinamento per data d'inizio (più vecchia in alto)
-            order = pd.Index(
-                gantt.sort_values(["Inizio", "Fine", "Attività"])["Attività"]
-            ).unique().tolist()
+            order = pd.Index(gantt.sort_values(["Inizio", "Fine", "Attività"])["Attività"]).unique().tolist()
 
             fig = px.timeline(
                 gantt,
@@ -323,65 +308,70 @@ if csv_file:
                 x_end="Fine",
                 y="Attività",
                 color="Operatore",
-                text="LabelAvanzamento"
+                text="LabelAvanzamento",
+                custom_data=["IdxReale", "Inizio", "Fine", "Attività"]
             )
             fig.update_traces(textposition="inside", insidetextanchor="middle")
             fig.update_yaxes(categoryorder="array", categoryarray=order, autorange="reversed")
-            fig.update_layout(
-                xaxis_title="Data",
-                yaxis_title="Attività",
-                title=f"Gantt - {mat_sel}"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(xaxis_title="Data", yaxis_title="Attività", title=f"Gantt - {mat_sel}")
+
+            clicked = plotly_events(fig, click_event=True, select_event=False, hover_event=False, key="gantt_csv")
         else:
             st.info("Nessuna data valida per disegnare il Gantt.")
+            clicked = []
+    else:
+        clicked = []
 
+    # --- Se clicco una barra, apro i campi di modifica pre-compilati
+    if clicked:
+        pt = clicked[0]
+        idx_reale = int(pt["customdata"][0])
+        inizio_old = pd.to_datetime(pt["customdata"][1])
+        fine_old   = pd.to_datetime(pt["customdata"][2])
+        attivita_nome = pt["customdata"][3]
 
+        st.info(f"🖱️ Selezionato: **{attivita_nome}** (indice riga {idx_reale})")
 
-    # Maschera di modifica identica (per singola attività)
-    st.markdown("### ✏️ Modifica attività selezionata")
-    if not df_mat.empty:
-        # Select attività (indice reale per poter salvare sulla riga corretta)
-        idx = st.selectbox(
-            "Seleziona attività da modificare",
-            df_mat.index,
-            format_func=lambda i: f"{df_mat.loc[i, 'Attività']} | {df_mat.loc[i, 'MATERIALE']}" if "Attività" in df_mat.columns else str(i)
-        )
+        colA, colB = st.columns(2)
+        with colA:
+            new_di = st.date_input("Nuova data inizio", inizio_old)
+        with colB:
+            new_df = st.date_input("Nuova data fine", fine_old)
 
-        row = df_pianif.loc[idx]
+        # Nudge rapido
+        nudge = st.number_input("Sposta entrambe le date di N giorni (negativo = anticipa)", value=0, step=1)
+        if nudge != 0:
+            new_di = (pd.to_datetime(new_di) + pd.Timedelta(days=int(nudge))).date()
+            new_df = (pd.to_datetime(new_df) + pd.Timedelta(days=int(nudge))).date()
 
-        # Pre-parsing date
-        di = pd.to_datetime(row.get("Data inizio",""), dayfirst=True, errors="coerce")
-        dfine = pd.to_datetime(row.get("Data fine",""), dayfirst=True, errors="coerce")
-        if pd.isna(di): di = datetime.today()
-        if pd.isna(dfine): dfine = datetime.today()
-
-        new_di = st.date_input("Nuova data inizio", di)
-        new_df = st.date_input("Nuova data fine", dfine)
-
-        # Stato attività con lista unica
-        stato_opts = STATI_ATTIVITA
-        idx_stato = stato_opts.index(row["Stato attività"]) if row.get("Stato attività") in stato_opts else 0
-        new_stato = st.selectbox("Stato attività", stato_opts, index=idx_stato)
-
-        # Completamento con auto-link allo stato
-        new_comp = st.slider("Completamento (%)", 0, 100, int(row.get("Completamento",0)), step=5)
+        # Stato & completamento
+        stato_curr = df_pianif.loc[idx_reale, "Stato attività"] if "Stato attività" in df_pianif.columns else STATI_ATTIVITA[0]
+        try:
+            idx_stato = STATI_ATTIVITA.index(stato_curr)
+        except ValueError:
+            idx_stato = 0
+        new_stato = st.selectbox("Stato attività", STATI_ATTIVITA, index=idx_stato)
+        new_comp = st.slider("Completamento (%)", 0, 100, int(df_pianif.loc[idx_reale].get("Completamento", 0)), step=5)
         if new_comp == 100:
             new_stato = "Completato"
             st.caption("🔁 Stato impostato automaticamente a **Completato** (100%).")
 
-        if st.button("💾 Salva modifica"):
+        if st.button("💾 Aggiorna riga selezionata"):
             os.makedirs("dati_pianificati", exist_ok=True)
-            df_pianif.at[idx, "Data inizio"] = new_di.strftime("%d/%m/%Y")
-            df_pianif.at[idx, "Data fine"] = new_df.strftime("%d/%m/%Y")
-            df_pianif.at[idx, "Stato attività"] = new_stato
-            df_pianif.at[idx, "Completamento"] = new_comp
+            df_pianif.at[idx_reale, "Data inizio"] = pd.to_datetime(new_di).strftime("%d/%m/%Y")
+            df_pianif.at[idx_reale, "Data fine"]   = pd.to_datetime(new_df).strftime("%d/%m/%Y")
+            df_pianif.at[idx_reale, "Stato attività"] = new_stato
+            df_pianif.at[idx_reale, "Completamento"]  = new_comp
 
-            nome_file_csv = csv_file.name
-            out_path = f"dati_pianificati/{nome_file_csv}"
+            out_path = f"dati_pianificati/{csv_file.name}"
             df_pianif.to_csv(out_path, index=False, encoding="utf-8-sig")
-            st.success(f"Aggiornamento salvato in {out_path}")
+            st.success(f"Aggiornato e salvato in {out_path}")
 
-            # Refresh preview
+            st.download_button(
+                "⬇️ Scarica CSV aggiornato",
+                data=df_pianif.to_csv(index=False).encode("utf-8-sig"),
+                file_name=csv_file.name,
+                mime="text/csv"
+            )
+
             st.dataframe(df_pianif, use_container_width=True, height=300)
-
