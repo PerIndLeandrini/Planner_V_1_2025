@@ -354,8 +354,8 @@ if csv_file:
         if pd.isna(di): di = datetime.today()
         if pd.isna(dfine): dfine = datetime.today()
 
-        new_di = st.date_input("Nuova data inizio", di)
-        new_df = st.date_input("Nuova data fine", dfine)
+        new_di = st.date_input("Nuova data inizio", di, format="DD/MM/YYYY")
+        new_df = st.date_input("Nuova data fine", dfine, format="DD/MM/YYYY")
 
         # Stato attività con lista unica
         stato_opts = STATI_ATTIVITA
@@ -382,3 +382,4 @@ if csv_file:
 
             # Refresh preview
             st.dataframe(df_pianif, use_container_width=True, height=300)
+
