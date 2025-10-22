@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import plotly.express as px
 import numpy as np
+
 
 # --- Config ---
 st.set_page_config(page_title="Pianificazione Produzione", layout="wide")
@@ -117,8 +118,35 @@ def normalize_state(s: str) -> str:
     }
     return mapping.get(t, s.strip())
 
+def _choose_or_build_color_key(df: pd.DataFrame, y_col: str) -> str:
+    """
+    Sceglie una colonna per colorare il Gantt.
+    Usa un candidato solo se ha >1 valori distinti; altrimenti
+    costruisce una chiave univoca per riga (così ogni barra ha un colore diverso).
+    """
+    candidates = ("Operatore", "Centro di lavoro", "Macchina", "Attività", "Stato attività")
+    for c in candidates:
+        if c in df.columns:
+            nunq = df[c].dropna().astype(str).str.strip().nunique()
+            if nunq > 1:
+                return c  # abbastanza varietà per colori diversi
+
+    # Fallback: base dalla y o dalla prima colonna
+    base = (
+        df[y_col].astype(str) if y_col in df.columns
+        else df.iloc[:, 0].astype(str)
+    ).fillna("").str.strip()
+
+    dup_mask = base.duplicated(keep=False)
+    ord_in_group = base.groupby(base).cumcount() + 1
+    ord_in_group = ord_in_group.astype(str)
+
+    key = base.where(~dup_mask, base + " #" + ord_in_group)
+    df["__col_key__"] = pd.Categorical(key)
+    return "__col_key__"
+
 def draw_gantt(df_src, titolo, y_col, color_candidates=("Operatore","Centro di lavoro","Attività","Macchina","Stato attività")):
-    """Disegna un Gantt robusto su df_src con colonne Data inizio/Data fine."""
+    """Disegna un Gantt robusto su df_src con colonne Data inizio/Data fine, assegnando SEMPRE colori ben distinti."""
     if df_src is None or df_src.empty:
         st.info(f"Nessuna riga per {titolo}.")
         return
@@ -137,10 +165,7 @@ def draw_gantt(df_src, titolo, y_col, color_candidates=("Operatore","Centro di l
 
     order = pd.Index(dfp.sort_values(["Data inizio","Data fine", y_col])[y_col]).unique().tolist()
 
-    color_col = pick_color_column(dfp, color_candidates)
-    kwargs = {}
-    if color_col:
-        kwargs["color"] = color_col
+    color_col = _choose_or_build_color_key(dfp, y_col)
 
     fig = px.timeline(
         dfp,
@@ -148,13 +173,26 @@ def draw_gantt(df_src, titolo, y_col, color_candidates=("Operatore","Centro di l
         x_end="Data fine",
         y=y_col,
         text="LabelAvanzamento",
-        **kwargs
+        color=color_col
     )
     fig.update_traces(textposition="inside", insidetextanchor="middle")
     fig.update_yaxes(categoryorder="array", categoryarray=order, autorange="reversed")
-    fig.update_layout(title=titolo, xaxis_title="Data", yaxis_title=y_col)
+    fig.update_layout(title=titolo, xaxis_title="Data", yaxis_title=y_col, legend_title_text="Legenda")
     st.plotly_chart(fig, use_container_width=True)
 
+def to_csv_ita(df_save: pd.DataFrame, date_cols=None) -> str:
+    """Converte Valore(visuale) e formatta date DD/MM/YYYY prima di salvare."""
+    if date_cols is None:
+        date_cols = ["Data inizio","Data fine","Data consegna originale","Data consegna ritrattata"]
+    df_out = df_save.copy()
+    # Ricalcolo Valore (visuale) se esiste Valore numerico
+    if "Valore" in df_out.columns and pd.api.types.is_numeric_dtype(df_out["Valore"]):
+        df_out["Valore (visuale)"] = df_out["Valore"].apply(fmt_eur)
+    # Date → stringhe ITA
+    for c in date_cols:
+        if c in df_out.columns:
+            df_out[c] = pd.to_datetime(df_out[c], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+    return df_out.to_csv(index=False, encoding="utf-8-sig")
 
 # =========================
 # 1) Caricamento file Excel ORDINI per pianificare (flusso classico)
@@ -314,45 +352,16 @@ if uploaded_file:
             st.markdown("### 📆 Gantt delle Attività")
             df_gantt = pd.DataFrame(pianificazione)
             if not df_gantt.empty:
-                df_gantt["Inizio"] = pd.to_datetime(df_gantt["Data inizio"], format="%d/%m/%Y", errors="coerce")
-                df_gantt["Fine"]   = pd.to_datetime(df_gantt["Data fine"],   format="%d/%m/%Y", errors="coerce")
-                df_gantt = df_gantt.dropna(subset=["Inizio","Fine"])
-                if not df_gantt.empty:
-                    df_gantt["LabelAvanzamento"] = df_gantt["Completamento"].fillna(0).astype(int).astype(str) + "%"
-
-                    order = pd.Index(
-                        df_gantt.sort_values(["Inizio", "Fine", "Attività"])["Attività"]
-                    ).unique().tolist()
-
-                    # hardening: scegli color disponibile
-                    color_col = pick_color_column(df_gantt, ("Operatore","Centro di lavoro","Attività","Stato attività"))
-                    kwargs = {}
-                    if color_col:
-                        kwargs["color"] = color_col
-
-                    fig = px.timeline(
-                        df_gantt,
-                        x_start="Inizio",
-                        x_end="Fine",
-                        y="Attività",
-                        text="LabelAvanzamento",
-                        **kwargs
-                    )
-                    fig.update_traces(textposition="inside", insidetextanchor="middle")
-                    fig.update_yaxes(categoryorder="array", categoryarray=order, autorange="reversed")
-                    fig.update_layout(
-                        xaxis_title="Data",
-                        yaxis_title="Attività pianificata",
-                        title=f"Gantt - {codice_sel}"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                df_gantt["Data inizio"] = pd.to_datetime(df_gantt["Data inizio"], format="%d/%m/%Y", errors="coerce")
+                df_gantt["Data fine"]   = pd.to_datetime(df_gantt["Data fine"],   format="%d/%m/%Y", errors="coerce")
+                draw_gantt(df_gantt, f"Gantt - {codice_sel}", y_col="Attività")
         else:
             st.warning("⚠️ Nessuna riga trovata per il materiale selezionato.")
 else:
     st.info("📂 Carica un file Excel per iniziare (oppure vai sotto e carica un CSV esistente).")
 
 # =========================
-# 2) Carica Pianificazione ESISTENTE (CSV) e mostra TUTTO come in pianificazione
+# 2) Carica Pianificazione ESISTENTE (CSV) — ORA EDITABILE INLINE
 # =========================
 st.markdown("---")
 st.header("📂 Carica Pianificazione Esistente")
@@ -360,224 +369,213 @@ st.header("📂 Carica Pianificazione Esistente")
 csv_file = st.file_uploader("Carica un file CSV di pianificazione esistente", type=[".csv"], key="csv")
 
 if csv_file:
+    # 2.1) Carico il CSV grezzo (mantengo i tipi numerici/str quando possibile)
     df_pianif = pd.read_csv(csv_file)
 
-    # Normalizza date per la vista e per il Gantt
-    for col in ["Data inizio", "Data fine"]:
-        if col in df_pianif.columns:
-            dt = pd.to_datetime(df_pianif[col], dayfirst=True, errors="coerce")
-            df_pianif[col] = dt.dt.strftime("%d/%m/%Y").fillna("")
+    # 2.2) Preparazione per l'editor: converto le date in oggetti 'date'
+    date_cols = ["Data inizio", "Data fine", "Data consegna originale", "Data consegna ritrattata"]
+    df_edit = df_pianif.copy()
 
-    if "Valore" in df_pianif.columns and pd.api.types.is_numeric_dtype(df_pianif["Valore"]):
-        df_pianif["Valore (visuale)"] = df_pianif["Valore"].apply(fmt_eur)
+    # Normalizza stato
+    if "Stato attività" in df_edit.columns:
+        df_edit["Stato attività"] = df_edit["Stato attività"].astype(str).apply(normalize_state)
 
-    st.subheader("📋 Pianificazione caricata (tutte le righe)")
-    st.dataframe(df_pianif, use_container_width=True, height=380)
-    # === EXPANDER: Gantt per macchina (dal CSV) — per stato ===
-    with st.expander("📦 Gantt per macchina (dal CSV) — per stato", expanded=False):
-        dfn = df_pianif.copy()
-    
-        # normalizza etichette stato (usa la tua helper normalize_state)
+    for c in date_cols:
+        if c in df_edit.columns:
+            dt = pd.to_datetime(df_edit[c], dayfirst=True, errors="coerce")
+            df_edit[c] = dt.dt.date  # DateColumn friendly
+
+    # 2.3) Editor inline (dinamico) con tipi colonna
+# 2.3) Editor inline (dinamico) con tipi colonna e menu a tendina
+    st.subheader("✏️ Pianificazione caricata (tutte le righe) — EDITABILE")
+
+    # Liste opzioni (unione: valori presenti nel CSV + liste note del tuo flusso)
+    ATTIVITA_LIST = [
+        "Progettazione", "Preparazione materiale", "F1", "F2", "F3", "F4", "F5", "F6",
+        "Trattamento", "Lav. Esterna", "Verniciatura", "Marcatura",
+        "Controllo Qualità", "Imballaggio"
+    ]
+    OPERATORI = ["PAOLO", "TONINO", "MICHELE", "ALESSANDRO", "VALERIO", "LUCA", "MARCO", "TOMMI",
+                 "IACOPO", "ALESSIO", "ALEANDRO", "DANIELE", "SOUKAINA", "SIMONE", "MICHEL", "ELENA"]
+    CENTRI = ["Hurco", "Mazak 5assi", "Mazak 4assi", "Mazak HCN", "Mazak 3assi", "Hyundai",
+              "Macchine //", "DMG Mori", "Takisawa", "SALA METROLOGICA", "TRONCATRICE"]
+
+    # Percentuali per completamento (menu a tendina)
+    PERC_OPTS = list(range(0, 101, 10))  # [0, 10, 20, ..., 100]
+
+    # Opzioni dinamiche prese dal file caricato (se esistono le colonne)
+    macchine_opts = sorted(set(df_edit.get("Macchina", pd.Series(dtype=str)).dropna().astype(str).str.strip().tolist()))
+    attivita_opts = sorted(set(df_edit.get("Attività", pd.Series(dtype=str)).dropna().astype(str).str.strip().tolist())) or ATTIVITA_LIST
+    operatori_opts = sorted(set(df_edit.get("Operatore", pd.Series(dtype=str)).dropna().astype(str).str.strip().tolist())) or OPERATORI
+    centri_opts = sorted(set(df_edit.get("Centro di lavoro", pd.Series(dtype=str)).dropna().astype(str).str.strip().tolist())) or CENTRI
+
+    # Converto le 4 date a date pure (già fatto sopra) — qui solo sicurezza
+    for c in ["Data inizio", "Data fine", "Data consegna originale", "Data consegna ritrattata"]:
+        if c in df_edit.columns and not pd.api.types.is_datetime64_any_dtype(df_edit[c]):
+            df_edit[c] = pd.to_datetime(df_edit[c], errors="coerce").dt.date
+
+    # 1) Colonne testuali → stringa
+    text_cols = [
+        "Fornitore", "Note", "Macchina", "Attività", "Operatore", "Centro di lavoro",
+        "MATERIALE", "Revisione", "Descrizione", "ODA", "Posizione",
+        "Stato attività", "Valore (visuale)"
+    ]
+    for c in text_cols:
+        if c in df_edit.columns:
+            df_edit[c] = df_edit[c].map(lambda v: "" if pd.isna(v) else str(v).strip())
+
+    # 2) Colonne numeriche → numero
+    num_cols = ["Completamento", "Quantità", "Valore"]
+    for c in num_cols:
+        if c in df_edit.columns:
+            df_edit[c] = pd.to_numeric(df_edit[c], errors="coerce")
+
+    # 3) Completamento in [0,100] e intero
+    if "Completamento" in df_edit.columns:
+        df_edit["Completamento"] = df_edit["Completamento"].fillna(0).clip(0, 100).astype(int)
+
+    # 4) (Sicurezza) Date come date/None
+    for c in ["Data inizio", "Data fine", "Data consegna originale", "Data consegna ritrattata"]:
+        if c in df_edit.columns:
+            dt = pd.to_datetime(df_edit[c], errors="coerce")
+            df_edit[c] = dt.dt.date
+    # === FINE BLOCCO ===
+
+    # Ora l'editor:
+    df_edited = st.data_editor(
+        df_edit,
+        use_container_width=True,
+        hide_index=False,
+        num_rows="dynamic",
+        column_config={
+            "Data inizio": st.column_config.DateColumn(
+                format="DD/MM/YYYY",
+                min_value=date(2020, 1, 1),      # opzionale
+                max_value=date(2035, 12, 31),    # opzionale
+                help="Clicca per aprire il calendario"
+            ),
+            "Data fine": st.column_config.DateColumn(
+                format="DD/MM/YYYY",
+                min_value=date(2020, 1, 1),
+                max_value=date(2035, 12, 31),
+                help="Clicca per aprire il calendario"
+            ),
+            "Data consegna originale": st.column_config.DateColumn(
+                format="DD/MM/YYYY"
+            ),
+            "Data consegna ritrattata": st.column_config.DateColumn(
+                format="DD/MM/YYYY"
+            ),
+            "Stato attività": st.column_config.SelectboxColumn(options=STATI_ATTIVITA, required=False),
+            "Macchina": st.column_config.SelectboxColumn(options=macchine_opts or ["DMG MORI","HURCO","HYUNDAI","MAZAK 3 ASSI","MAZAK 4 ASSI","MAZAK 5 ASSI","MAZAK HCN","SALA SMN","TAKISAWA","TORNIO PAOLO","TORNIO TONINO"], required=False),
+            "Attività": st.column_config.SelectboxColumn(options=attivita_opts, required=False),
+            "Operatore": st.column_config.SelectboxColumn(options=operatori_opts, required=False),
+            "Centro di lavoro": st.column_config.SelectboxColumn(options=centri_opts, required=False),
+            "Completamento": st.column_config.SelectboxColumn(options=PERC_OPTS, required=False),
+            "Quantità": st.column_config.NumberColumn(),
+            "Valore": st.column_config.NumberColumn(format="%.2f"),
+            "Fornitore": st.column_config.TextColumn(),
+            "Note": st.column_config.TextColumn(),
+            "Valore (visuale)": st.column_config.TextColumn(help="Viene ricalcolato al salvataggio"),
+        }
+    )
+
+    # 2.4) Vista/Gantt LIVE basati sull'editor (senza ricaricare)
+    df_live = df_edited.copy()
+    # Normalizza tipi
+    if "Completamento" in df_live.columns:
+        df_live["Completamento"] = pd.to_numeric(df_live["Completamento"], errors="coerce").fillna(0).astype(int)
+
+    if "Stato attività" in df_live.columns:
+        df_live["Stato attività"] = df_live["Stato attività"].astype(str).apply(normalize_state)
+
+    # Regole di coerenza
+    if {"Completamento", "Stato attività"}.issubset(df_live.columns):
+        # 100% => Completato
+        df_live.loc[df_live["Completamento"] == 100, "Stato attività"] = "Completato"
+        # Completato ma <100% => porta a 100
+        mask_comp = (df_live["Stato attività"] == "Completato") & (df_live["Completamento"] < 100)
+        df_live.loc[mask_comp, "Completamento"] = 100
+    # Converto back to datetime per grafici
+    for c in ["Data inizio","Data fine"]:
+        if c in df_live.columns:
+            df_live[c] = pd.to_datetime(df_live[c], errors="coerce")
+
+    with st.expander("📋 Anteprima (live) dalla tabella sopra", expanded=False):
+        df_preview = df_live.copy()
+        # Formatta le date in DD/MM/YYYY per la sola anteprima
+        for c in ["Data inizio","Data fine","Data consegna originale","Data consegna ritrattata"]:
+            if c in df_preview.columns:
+                df_preview[c] = pd.to_datetime(df_preview[c], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+
+        # Valore (visuale) solo display
+        if "Valore" in df_preview.columns and pd.api.types.is_numeric_dtype(df_preview["Valore"]):
+            df_preview["Valore (visuale)"] = df_preview["Valore"].apply(fmt_eur)
+
+        st.dataframe(df_preview, use_container_width=True, height=320)
+
+    # 2.5) Gantt per macchina (LIVE) — per stato
+    with st.expander("📦 Gantt per macchina (LIVE) — per stato", expanded=False):
+        dfn = df_live.copy()
         if "Stato attività" in dfn.columns:
-            dfn["Stato attività"] = dfn["Stato attività"].apply(normalize_state)
+            dfn["Stato attività"] = dfn["Stato attività"].astype(str).apply(normalize_state)
         else:
             dfn["Stato attività"] = ""
-    
-        # parse date (il CSV qui è formattato DD/MM/YYYY ma i grafici vogliono datetime)
-        for c in ["Data inizio","Data fine"]:
-            if c in dfn.columns:
-                dfn[c] = pd.to_datetime(dfn[c], dayfirst=True, errors="coerce")
-    
-        # bucket: In lavorazione = In Produzione ∪ In Corso ; Programmato = Programmato
+
         mask_lav  = dfn["Stato attività"].isin(["In Produzione","In Corso"])
         mask_prog = dfn["Stato attività"].eq("Programmato")
-    
+
         if "Macchina" not in dfn.columns:
             st.info("Nel CSV non c'è la colonna 'Macchina': impossibile raggruppare per macchina.")
         else:
-            macchine = (
-                dfn["Macchina"]
-                .dropna()
-                .astype(str).str.strip()
-                .unique()
-                .tolist()
-            )
+            macchine = sorted(dfn["Macchina"].dropna().astype(str).str.strip().unique().tolist())
             if not macchine:
-                st.info("Nessuna macchina trovata nel CSV.")
+                st.info("Nessuna macchina trovata.")
             else:
                 for mac in macchine:
                     st.markdown(f"#### 🏭 {mac}")
-    
                     sub = dfn[dfn["Macchina"] == mac]
                     sub_lav  = sub[mask_lav  & (sub["Macchina"] == mac)]
                     sub_prog = sub[mask_prog & (sub["Macchina"] == mac)]
-    
-                    # y = MATERIALE per vedere a colpo d'occhio i pezzi in coda su quella macchina
                     draw_gantt(sub_lav,  f"Gantt — {mac} — In lavorazione", "MATERIALE")
                     draw_gantt(sub_prog, f"Gantt — {mac} — Programmato",   "MATERIALE")
-    
                     st.markdown("---")
-    # === FINE EXPANDER ===
 
+    # 2.6) Gantt per materiale selezionato (LIVE)
+    if "MATERIALE" in df_live.columns:
+        materiali = df_live["MATERIALE"].astype(str).str.strip().unique().tolist()
+        mat_sel = st.selectbox("Seleziona materiale per dettaglio e Gantt (LIVE)", materiali)
+        df_mat = df_live[df_live["MATERIALE"].astype(str).str.strip() == str(mat_sel).strip()].copy()
 
-
-    # Selezione per MATERIALE (come nel flusso di pianificazione)
-    materiali = df_pianif["MATERIALE"].astype(str).str.strip().unique().tolist()
-    mat_sel = st.selectbox("Seleziona materiale per dettaglio e Gantt", materiali)
-
-    df_mat = df_pianif[df_pianif["MATERIALE"].astype(str).str.strip() == str(mat_sel).strip()].copy()
-
-    # Gantt per il materiale selezionato
-    st.markdown("### 📆 Gantt del materiale selezionato")
-    if not df_mat.empty and {"Data inizio","Data fine","Attività"}.issubset(df_mat.columns):
-        gantt = df_mat.copy()
-        gantt["Inizio"] = pd.to_datetime(gantt["Data inizio"], dayfirst=True, errors="coerce")
-        gantt["Fine"]   = pd.to_datetime(gantt["Data fine"],   dayfirst=True, errors="coerce")
-        gantt = gantt.dropna(subset=["Inizio","Fine"])
-        if not gantt.empty:
-            gantt["LabelAvanzamento"] = gantt["Completamento"].fillna(0).astype(int).astype(str) + "%"
-
-            # ordina per data d'inizio (più vecchia in alto)
-            order = pd.Index(
-                gantt.sort_values(["Inizio", "Fine", "Attività"])["Attività"]
-            ).unique().tolist()
-
-            # hardening: scegli color disponibile
-            color_col = pick_color_column(gantt, ("Operatore","Centro di lavoro","Macchina","Attività","Stato attività"))
-            kwargs = {}
-            if color_col:
-                kwargs["color"] = color_col
-
-            fig = px.timeline(
-                gantt,
-                x_start="Inizio",
-                x_end="Fine",
-                y="Attività",
-                text="LabelAvanzamento",
-                **kwargs
-            )
-            fig.update_traces(textposition="inside", insidetextanchor="middle")
-            fig.update_yaxes(categoryorder="array", categoryarray=order, autorange="reversed")
-            fig.update_layout(
-                xaxis_title="Data",
-                yaxis_title="Attività",
-                title=f"Gantt - {mat_sel}"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        st.markdown("### 📆 Gantt del materiale selezionato (LIVE)")
+        if not df_mat.empty and {"Data inizio","Data fine","Attività"}.issubset(df_mat.columns):
+            draw_gantt(df_mat, f"Gantt - {mat_sel}", y_col="Attività")
         else:
-            st.info("Nessuna data valida per disegnare il Gantt.")
+            st.info("Seleziona un materiale con date valide per il Gantt.")
 
-    # --- Modifica SEQUENZIALE di tutte le attività del materiale selezionato ---
-    st.markdown("### ✏️ Modifica SEQUENZIALE di tutte le attività del materiale selezionato")
-
-    if not df_mat.empty:
-        # Liste di riferimento
-        operatori = ["PAOLO", "TONINO", "MICHELE", "ALESSANDRO", "VALERIO", "LUCA", "MARCO", "TOMMI",
-                     "IACOPO", "ALESSIO", "ALEANDRO", "DANIELE", "SOUKAINA", "SIMONE", "MICHEL", "ELENA"]
-        centri = ["Hurco", "Mazak 5assi", "Mazak 4assi", "Mazak HCN", "Mazak 3assi", "Hyundai", "Macchine //",
-                  "DMG Mori", "Takisawa", "SALA METROLOGICA", "TRONCATRICE"]
-        fornitori = {
-            "Trattamento": ["MOCHEM", "SAMACROMO", "ART.ING.", "F.LLI BUGLI", "AVIORUBBER"],
-            "Verniciatura": ["Verniciatura industriale", "Birindelli"],
-            "Lav. Esterna": ["Galli & Sesti", "Pazzaglia", "Donatello"],
-            "Marcatura": ["Pazzaglia", "INTERNA LUPPICHINI"]
-        }
-
-        edited_rows = []
-
-        st.caption("🔎 Stai modificando TUTTE le fasi del materiale selezionato. Le modifiche verranno salvate insieme.")
-        for i, (idx, r) in enumerate(df_mat.iterrows(), start=1):
-            st.markdown(f"#### Attività {i} — indice riga CSV: `{idx}`")
-            st.write(f"**Attività:** {r.get('Attività','')}  |  **Operatore attuale:** {r.get('Operatore','')}  |  **Centro:** {r.get('Centro di lavoro','')}")
-
-            # Date (robuste al formato IT)
-            di = pd.to_datetime(r.get("Data inizio",""), dayfirst=True, errors="coerce")
-            dfine = pd.to_datetime(r.get("Data fine",""), dayfirst=True, errors="coerce")
-            if pd.isna(di): di = datetime.today()
-            if pd.isna(dfine): dfine = datetime.today()
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                new_di = st.date_input("Data inizio", di, format="DD/MM/YYYY", key=f"bulk_di_{idx}")
-            with col2:
-                new_df = st.date_input("Data fine", dfine, format="DD/MM/YYYY", key=f"bulk_df_{idx}")
-            with col3:
-                comp_default_raw = r.get("Completamento", 0)
-                try:
-                    comp_default = int(comp_default_raw) if pd.notna(comp_default_raw) else 0
-                except Exception:
-                    comp_default = 0
-                new_comp = st.slider("Completamento (%)", 0, 100, comp_default, step=5, key=f"bulk_comp_{idx}")
-
-            col4, col5, col6 = st.columns(3)
-            with col4:
-                stato_opts = STATI_ATTIVITA
-                stato_att = r.get("Stato attività")
-                default_idx = stato_opts.index(stato_att) if stato_att in stato_opts else 0
-                new_stato = st.selectbox("Stato attività", stato_opts, index=default_idx, key=f"bulk_stato_{idx}")
-            with col5:
-                op_default = r.get("Operatore") if pd.notna(r.get("Operatore","")) else operatori[0]
-                idx_op = operatori.index(op_default) if op_default in operatori else 0
-                new_op = st.selectbox("Operatore", operatori, index=idx_op, key=f"bulk_op_{idx}")
-            with col6:
-                cl_default = r.get("Centro di lavoro") if pd.notna(r.get("Centro di lavoro","")) else centri[0]
-                idx_cl = centri.index(cl_default) if cl_default in centri else 0
-                new_cl = st.selectbox("Centro di lavoro", centri, index=idx_cl, key=f"bulk_cl_{idx}")
-
-            # Fornitore dinamico se la tipologia attività lo prevede
-            att = r.get("Attività")
-            forn_list = fornitori.get(att, [])
-            new_forn = r.get("Fornitore","")
-            if forn_list:
-                idx_f = forn_list.index(new_forn) if new_forn in forn_list else 0
-                new_forn = st.selectbox(f"Fornitore per {att}", forn_list, index=idx_f, key=f"bulk_forn_{idx}")
-
-            # Coerenza stato ↔ completamento
-            if new_comp == 100 and new_stato != "Completato":
-                new_stato = "Completato"
-                st.session_state[f"bulk_stato_{idx}"] = "Completato"
-                st.caption("🔁 Stato impostato automaticamente a **Completato** (100%).")
-            if new_stato == "Completato" and new_comp < 100:
-                new_comp = 100
-                st.session_state[f"bulk_comp_{idx}"] = 100
-
-            edited_rows.append({
-                "idx": idx,
-                "Data inizio": new_di.strftime("%d/%m/%Y"),
-                "Data fine": new_df.strftime("%d/%m/%Y"),
-                "Completamento": new_comp,
-                "Stato attività": new_stato,
-                "Operatore": new_op,
-                "Centro di lavoro": new_cl,
-                "Fornitore": new_forn if forn_list else r.get("Fornitore","")
-            })
-
-            st.markdown("---")
-
-        # Salvataggio in blocco
-        if st.button("💾 Salva TUTTE le modifiche del materiale"):
+    # 2.7) Salvataggio/Download senza ricaricare
+    st.subheader("💾 Salva modifiche")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("💽 Salva su file (stesso nome in /dati_pianificati)"):
             os.makedirs("dati_pianificati", exist_ok=True)
-            for upd in edited_rows:
-                ridx = upd.pop("idx")
-                for k, v in upd.items():
-                    df_pianif.at[ridx, k] = v
-
             out_path = f"dati_pianificati/{csv_file.name}"
-            st.success(f"Aggiornato e salvato in {out_path}")
-
-            # assicura formato ITA prima del salvataggio
-            df_save = df_pianif.copy()
-            for c in ["Data inizio","Data fine"]:
-                df_save[c] = pd.to_datetime(df_save[c], dayfirst=True, errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
-            df_save.to_csv(out_path, index=False, encoding="utf-8-sig")
-
-            # Refresh preview
-            st.dataframe(df_pianif, use_container_width=True, height=300)
+            csv_txt = to_csv_ita(df_live)
+            with open(out_path, "w", encoding="utf-8-sig") as f:
+                f.write(csv_txt)
+            st.success(f"Salvato in {out_path}")
+    with c2:
+        csv_download = to_csv_ita(df_live)
+        st.download_button(
+            "⬇️ Scarica CSV aggiornato",
+            data=csv_download,
+            file_name=csv_file.name,
+            mime="text/csv",
+        )
 
 # =========================
 # 3) Nuovo flusso: Assegna Macchina e Modalità, poi genera Pianificazione
 # =========================
-
 st.markdown("---")
 st.header("🧭 Assegnazione Macchina & Modalità")
 
@@ -587,7 +585,6 @@ MACCHINE = [
 ]
 MODALITA = ["", "In lavorazione", "Programmazione"]
 
-# (Opzionale) Pianificazione esistente per concatenare correttamente le code per macchina
 st.caption("🔗 (Opzionale) Carica una pianificazione esistente per concatenare correttamente le code per macchina.")
 csv_esistente = st.file_uploader("Carica CSV pianificazione esistente (opzionale)", type=[".csv"], key="csv_esistente")
 df_exist = None
@@ -901,34 +898,12 @@ if uploaded_file:
                 st.markdown("### 📆 Gantt per Macchina")
                 for mac in df_out["Macchina"].dropna().unique().tolist():
                     sub = df_out[df_out["Macchina"] == mac].copy()
-                    if sub.empty: 
+                    if sub.empty:
                         continue
                     sub = sub.dropna(subset=["Data inizio","Data fine"])
                     if sub.empty:
                         continue
-                    sub["LabelAvanzamento"] = sub["Completamento"].fillna(0).astype(int).astype(str) + "%"
-                    order = pd.Index(
-                        sub.sort_values(["Data inizio","Data fine","MATERIALE","Attività"])["MATERIALE"]
-                    ).unique().tolist()
-
-                    # hardening: scegli color disponibile
-                    color_col = pick_color_column(sub, ("Operatore","Centro di lavoro","Attività","Macchina","Stato attività"))
-                    kwargs = {}
-                    if color_col:
-                        kwargs["color"] = color_col
-
-                    fig = px.timeline(
-                        sub,
-                        x_start="Data inizio",
-                        x_end="Data fine",
-                        y="MATERIALE",
-                        text="LabelAvanzamento",
-                        **kwargs
-                    )
-                    fig.update_traces(textposition="inside", insidetextanchor="middle")
-                    fig.update_yaxes(categoryorder="array", categoryarray=order, autorange="reversed")
-                    fig.update_layout(title=f"Gantt - {mac}", xaxis_title="Data", yaxis_title="Materiale")
-                    st.plotly_chart(fig, use_container_width=True)
+                    draw_gantt(sub, f"Gantt - {mac}", y_col="MATERIALE")
 
             # Salvataggio
             if st.button("💾 Salva pianificazione"):
