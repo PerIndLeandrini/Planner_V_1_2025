@@ -129,7 +129,10 @@ def redigi_orderbook(template_bytes: bytes, planner_map: dict) -> bytes:
 
         stato, base_dt = planner_map[k]
 
-        seed_key = f"{k}|{stato}|{base_dt.strftime('%Y-%m-%d')}"
+        if base_dt is None or pd.isna(base_dt):
+            base_dt = datetime.now()
+
+        seed_key = f"{k}|{stato}|{base_dt:%Y-%m-%d}"
         target = calc_eta_date(base_dt, stato, seed_key)
 
         # scrivi su template: X = data, AF = stato
