@@ -7,23 +7,21 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook
 
 # -----------------------------
-# CONFIG TEMPLATE / COLONNE
+# CONFIG COLONNE
 # -----------------------------
-TEMPLATE_PATH = "template_orderbook.xlsx"   # nel repo
-SHEET_TEMPLATE_INDEX = 0                   # primo foglio del template
+SHEET_TEMPLATE_INDEX = 0  # primo foglio dell'orderbook caricato
 
-# Colonne di scrittura nel template (Excel letters)
-OB_COL_DATA_OUT = "X"   # data stimata
-OB_COL_STATO_OUT = "AF" # stato
+# Colonne di scrittura nell'orderbook (Excel letters)
+OB_COL_DATA_OUT = "X"    # data stimata
+OB_COL_STATO_OUT = "AF"  # stato
 
-# Colonne che il template usa per matchare (dove sono in template)
-# Se nel template queste colonne sono diverse, dimmelo e le cambiamo.
+# Colonne usate per matchare (nel file orderbook cliente)
 OB_COL_MATERIALE = "A"
 OB_COL_ODA = "E"
 OB_COL_POS = "F"
 
 # Colonne richieste nel file upload (ORDINI_export)
-REQ_UPLOAD_COLS = ["CODICE","ODA","POS","STATO","DATA_PASSAGGIO_PRD"]
+REQ_UPLOAD_COLS = ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD"]
 
 # -----------------------------
 # AUTH
@@ -86,11 +84,13 @@ def build_planner_map(df_ord: pd.DataFrame) -> dict:
     df = df_ord.copy()
 
     # normalizza
-    for c in ["CODICE","ODA","POS","STATO","DATA_PASSAGGIO_PRD"]:
+    for c in ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD"]:
         df[c] = df[c].astype(str).fillna("").str.strip()
 
     df["_BASE_DT"] = df["DATA_PASSAGGIO_PRD"].apply(parse_dt)
 
+    # chiave -> (stato, base_dt)
+    # se duplicati: prende l'ultima occorrenza (ok)
     planner_map = {}
     for _, r in df.iterrows():
         cod, oda, pos = r["CODICE"], r["ODA"], r["POS"]
@@ -103,8 +103,12 @@ def build_planner_map(df_ord: pd.DataFrame) -> dict:
 
     return planner_map
 
-def redigi_orderbook(template_bytes: bytes, planner_map: dict) -> bytes:
-    wb = load_workbook(BytesIO(template_bytes))
+def redigi_orderbook(orderbook_bytes: bytes, planner_map: dict):
+    """
+    Prende l'orderbook del cliente (bytes), compila X e AF dove trova match su CODICE|ODA|POS,
+    restituisce (out_bytes, stats).
+    """
+    wb = load_workbook(BytesIO(orderbook_bytes))
     ws = wb.worksheets[SHEET_TEMPLATE_INDEX]
 
     updated = 0
@@ -128,14 +132,12 @@ def redigi_orderbook(template_bytes: bytes, planner_map: dict) -> bytes:
             continue
 
         stato, base_dt = planner_map[k]
-
-        if base_dt is None or pd.isna(base_dt):
+        if not base_dt:
             base_dt = datetime.now()
 
         seed_key = f"{k}|{stato}|{base_dt:%Y-%m-%d}"
         target = calc_eta_date(base_dt, stato, seed_key)
 
-        # scrivi su template: X = data, AF = stato
         ws[xl_cell(r, OB_COL_DATA_OUT)].value = target.strftime("%d/%m/%Y")
         ws[xl_cell(r, OB_COL_STATO_OUT)].value = stato
 
@@ -143,7 +145,12 @@ def redigi_orderbook(template_bytes: bytes, planner_map: dict) -> bytes:
 
     out = BytesIO()
     wb.save(out)
-    return out.getvalue(), {"updated": updated, "no_match": no_match, "skipped": skipped, "rows": max_row-1}
+    return out.getvalue(), {
+        "updated": updated,
+        "no_match": no_match,
+        "skipped": skipped,
+        "rows": max_row - 1
+    }
 
 # -----------------------------
 # UI
@@ -157,40 +164,46 @@ if not check_login():
 
 st.success("✅ Accesso consentito.")
 
-uploaded = st.file_uploader("📤 Carica il file ORDINI_export.xlsx", type=["xlsx"])
+c1, c2 = st.columns(2)
+with c1:
+    uploaded_ordini = st.file_uploader("📤 Upload 1 — Carica ORDINI_export.xlsx", type=["xlsx"], key="u_ord")
+with c2:
+    uploaded_orderbook = st.file_uploader("📤 Upload 2 — Carica Orderbook cliente (.xlsx)", type=["xlsx"], key="u_ob")
 
-if not uploaded:
+if not uploaded_ordini or not uploaded_orderbook:
+    st.info("Carica entrambi i file per procedere.")
     st.stop()
 
+# ---- leggi ORDINI_export
 try:
-    df = pd.read_excel(uploaded, sheet_name="ORDINI", dtype=str).fillna("")
+    df = pd.read_excel(uploaded_ordini, sheet_name="ORDINI", dtype=str).fillna("")
 except Exception:
-    # fallback: primo foglio
-    df = pd.read_excel(uploaded, sheet_name=0, dtype=str).fillna("")
+    df = pd.read_excel(uploaded_ordini, sheet_name=0, dtype=str).fillna("")
 
 missing = [c for c in REQ_UPLOAD_COLS if c not in df.columns]
 if missing:
-    st.error(f"File non valido: mancano colonne {missing}")
+    st.error(f"File ORDINI_export non valido: mancano colonne {missing}")
     st.stop()
 
-st.subheader("🔎 Anteprima dati caricati")
+st.subheader("🔎 Anteprima ORDINI_export")
 st.dataframe(df.head(30), use_container_width=True)
 
 planner_map = build_planner_map(df)
 
 st.divider()
-st.subheader("🧾 Redigi orderbook")
+st.subheader("🧾 Redigi Orderbook (compila X e AF)")
 
-with open(TEMPLATE_PATH, "rb") as f:
-    template_bytes = f.read()
+# bytes dell'orderbook cliente
+orderbook_bytes = uploaded_orderbook.getvalue()
 
 if st.button("🚀 Genera Orderbook compilato", use_container_width=True):
-    out_bytes, stats = redigi_orderbook(template_bytes, planner_map)
+    out_bytes, stats = redigi_orderbook(orderbook_bytes, planner_map)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Righe aggiornate", stats["updated"])
-    c2.metric("Righe senza match", stats["no_match"])
-    c3.metric("Righe incomplete template", stats["skipped"])
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Righe aggiornate", stats["updated"])
+    k2.metric("Righe senza match", stats["no_match"])
+    k3.metric("Righe incomplete orderbook", stats["skipped"])
+    k4.metric("Righe totali", stats["rows"])
 
     fname = f"orderbook_compilato_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     st.download_button(
