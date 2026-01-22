@@ -55,13 +55,24 @@ def stable_randint(seed_key: str, a: int, b: int) -> int:
     return rnd.randint(a, b)
 
 def parse_dt(x):
-    s = str(x).strip() if x is not None else ""
-    if not s:
+    if x is None:
         return None
-    dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+
+    # se arriva già Timestamp/Datetime
+    if isinstance(x, datetime):
+        return x
+
+    try:
+        dt = pd.to_datetime(x, errors="coerce", dayfirst=True)
+    except Exception:
+        return None
+
     if pd.isna(dt):
         return None
+
+    # Timestamp -> datetime
     return dt.to_pydatetime()
+
 
 def calc_eta_date(base_dt: datetime, stato: str, key: str) -> datetime:
     s = (stato or "").strip().upper()
@@ -97,7 +108,10 @@ def build_planner_map(df_ord: pd.DataFrame) -> dict:
         if not (cod and oda and pos):
             continue
         stato = r["STATO"]
-        base_dt = r["_BASE_DT"] or datetime.now()
+        base_dt = r["_BASE_DT"]
+        if base_dt is None:
+            base_dt = datetime.now()
+
         k = f"{cod}|{oda}|{pos}"
         planner_map[k] = (stato, base_dt)
 
@@ -132,6 +146,16 @@ def redigi_orderbook(orderbook_bytes: bytes, planner_map: dict):
             continue
 
         stato, base_dt = planner_map[k]
+        # normalizza base_dt (può arrivare Timestamp o NaT)
+        if base_dt is None or pd.isna(base_dt):
+            base_dt = datetime.now()
+        elif not isinstance(base_dt, datetime):
+            base_dt = pd.to_datetime(base_dt, errors="coerce", dayfirst=True)
+            if pd.isna(base_dt):
+                base_dt = datetime.now()
+            else:
+                base_dt = base_dt.to_pydatetime()
+
         if not base_dt:
             base_dt = datetime.now()
 
@@ -189,6 +213,10 @@ st.subheader("🔎 Anteprima ORDINI_export")
 st.dataframe(df.head(30), use_container_width=True)
 
 planner_map = build_planner_map(df)
+# KPI: quante righe senza data passaggio
+missing_dt = df["DATA_PASSAGGIO_PRD"].astype(str).str.strip().eq("").sum()
+st.info(f"📅 Righe con DATA_PASSAGGIO_PRD vuota: {missing_dt}")
+
 
 st.divider()
 st.subheader("🧾 Redigi Orderbook (compila X e AF)")
@@ -213,3 +241,4 @@ if st.button("🚀 Genera Orderbook compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
