@@ -241,7 +241,7 @@ missing_drich = df.loc[df["STATO"].astype(str).str.strip().str.upper().eq("APERT
 
 st.info(f"📌 Righe APERTO con DATA_RICHIESTA vuota: {missing_drich}")
 st.divider()
-st.subheader("🧾 Redigi Orderbook (compila X e AF)")
+st.subheader("🧾 Redigi Orderbook con i dati del Planner Aziedale")
 
 # bytes dell'orderbook cliente
 orderbook_bytes = uploaded_orderbook.getvalue()
@@ -263,6 +263,7 @@ if st.button("🚀 Genera Orderbook compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 
 
 
