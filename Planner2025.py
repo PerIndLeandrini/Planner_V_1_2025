@@ -21,7 +21,8 @@ OB_COL_ODA = "E"
 OB_COL_POS = "F"
 
 # Colonne richieste nel file upload (ORDINI_export)
-REQ_UPLOAD_COLS = ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD"]
+REQ_UPLOAD_COLS = ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD", "DATA_RICHIESTA"]
+
 
 # -----------------------------
 # AUTH
@@ -77,6 +78,10 @@ def parse_dt(x):
 def calc_eta_date(base_dt: datetime, stato: str, key: str) -> datetime:
     s = (stato or "").strip().upper()
 
+    # ✅ allineamento: se APERTO, la promessa = DATA_RICHIESTA (nessun offset)
+    if s == "APERTO":
+        return base_dt
+
     if s == "SALA METROLOGICA":
         days = 7
     elif s == "OUTSOURCING":
@@ -88,6 +93,7 @@ def calc_eta_date(base_dt: datetime, stato: str, key: str) -> datetime:
 
     return base_dt + timedelta(days=int(days))
 
+
 def xl_cell(row_idx: int, col_letter: str) -> str:
     return f"{col_letter}{row_idx}"
 
@@ -95,21 +101,28 @@ def build_planner_map(df_ord: pd.DataFrame) -> dict:
     df = df_ord.copy()
 
     # normalizza
-    for c in ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD"]:
+    for c in ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD", "DATA_RICHIESTA"]:
         df[c] = df[c].astype(str).fillna("").str.strip()
 
-    df["_BASE_DT"] = df["DATA_PASSAGGIO_PRD"].apply(parse_dt)
+    df["_DT_PASSAGGIO"] = df["DATA_PASSAGGIO_PRD"].apply(parse_dt)
+    df["_DT_RICHIESTA"] = df["DATA_RICHIESTA"].apply(parse_dt)
 
-    # chiave -> (stato, base_dt)
-    # se duplicati: prende l'ultima occorrenza (ok)
     planner_map = {}
     for _, r in df.iterrows():
         cod, oda, pos = r["CODICE"], r["ODA"], r["POS"]
         if not (cod and oda and pos):
             continue
-        stato = r["STATO"]
-        base_dt = r["_BASE_DT"]
-        if base_dt is None:
+
+        stato = (r["STATO"] or "").strip()
+        stato_up = stato.upper()
+
+        # ✅ REGOLA: base_dt dipende dallo stato
+        if stato_up == "APERTO":
+            base_dt = r["_DT_RICHIESTA"]
+        else:
+            base_dt = r["_DT_PASSAGGIO"]
+
+        if base_dt is None or pd.isna(base_dt):
             base_dt = datetime.now()
 
         k = f"{cod}|{oda}|{pos}"
@@ -132,9 +145,9 @@ def redigi_orderbook(orderbook_bytes: bytes, planner_map: dict):
     max_row = ws.max_row
 
     for r in range(2, max_row + 1):
-        cod = str(ws[xl_cell(r, OB_COL_MATERIALE)].value or "").strip()
-        oda = str(ws[xl_cell(r, OB_COL_ODA)].value or "").strip()
-        pos = str(ws[xl_cell(r, OB_COL_POS)].value or "").strip()
+        cod = norm_key_text(ws[xl_cell(r, OB_COL_MATERIALE)].value)
+        oda = norm_key_text(ws[xl_cell(r, OB_COL_ODA)].value)
+        pos = norm_key_text(ws[xl_cell(r, OB_COL_POS)].value)
 
         if not (cod and oda and pos):
             skipped += 1
@@ -175,6 +188,12 @@ def redigi_orderbook(orderbook_bytes: bytes, planner_map: dict):
         "skipped": skipped,
         "rows": max_row - 1
     }
+
+def norm_key_text(x) -> str:
+    s = str(x or "").strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
 
 # -----------------------------
 # UI
@@ -217,7 +236,10 @@ planner_map = build_planner_map(df)
 missing_dt = df["DATA_PASSAGGIO_PRD"].astype(str).str.strip().eq("").sum()
 st.info(f"📅 Righe con DATA_PASSAGGIO_PRD vuota: {missing_dt}")
 
+missing_drich = df.loc[df["STATO"].astype(str).str.strip().str.upper().eq("APERTO"), "DATA_RICHIESTA"] \
+    .astype(str).str.strip().eq("").sum()
 
+st.info(f"📌 Righe APERTO con DATA_RICHIESTA vuota: {missing_drich}")
 st.divider()
 st.subheader("🧾 Redigi Orderbook (compila X e AF)")
 
@@ -241,4 +263,7 @@ if st.button("🚀 Genera Orderbook compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
+
+
 
