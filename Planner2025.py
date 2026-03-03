@@ -7,8 +7,10 @@ from datetime import datetime
 # -----------------------------
 # AUTH LOGIN
 # -----------------------------
+# -----------------------------
+# AUTH LOGIN (UI moderna)
+# -----------------------------
 def check_login():
-    """Gestione login semplice via st.secrets"""
 
     if "auth_ok" not in st.session_state:
         st.session_state.auth_ok = False
@@ -16,29 +18,80 @@ def check_login():
     if st.session_state.auth_ok:
         return True
 
-    st.title("🔐 Accesso Orderbook")
+    # ===== CSS CUSTOM =====
+    st.markdown("""
+        <style>
+        .login-box {
+            max-width: 420px;
+            margin: auto;
+            padding: 35px;
+            border-radius: 14px;
+            background-color: #ffffff;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+            text-align: center;
+        }
 
-    with st.container(border=True):
+        .login-title {
+            font-size: 26px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
 
-        username = st.text_input("Utente")
-        password = st.text_input("Password", type="password")
+        .login-sub {
+            color: #666;
+            margin-bottom: 25px;
+            font-size: 14px;
+        }
+
+        div[data-testid="stTextInput"] input {
+            text-align: center;
+        }
+
+        .logo-img {
+            width: 70px;
+            margin-bottom: 10px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # spazio verticale
+    st.write("")
+    st.write("")
+
+    # ===== CARD LOGIN =====
+    col1, col2, col3 = st.columns([1,2,1])
+
+    with col2:
+        st.markdown('<div class="login-box">', unsafe_allow_html=True)
+
+        # 🔵 LOGO (metti il tuo file nella repo)
+        st.image("logo.png", width=70)   # <-- cambia nome se vuoi
+
+        st.markdown('<div class="login-title">Accesso Orderbook</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-sub">Inserisci le credenziali per continuare</div>', unsafe_allow_html=True)
+
+        username = st.text_input("Utente", label_visibility="collapsed", placeholder="👤 Utente")
+        password = st.text_input("Password", type="password",
+                                 label_visibility="collapsed",
+                                 placeholder="🔒 Password")
 
         if st.button("Accedi", use_container_width=True):
 
             users = st.secrets.get("auth", {}).get("users", [])
-            pwds = st.secrets.get("auth", {}).get("passwords", [])
+            pwds  = st.secrets.get("auth", {}).get("passwords", [])
 
             if username in users:
                 idx = users.index(username)
 
                 if idx < len(pwds) and password == pwds[idx]:
                     st.session_state.auth_ok = True
-                    st.success("Accesso consentito ✅")
                     st.rerun()
                 else:
                     st.error("Password errata")
             else:
                 st.error("Utente non valido")
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.stop()
     
@@ -190,6 +243,7 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 
 
 
