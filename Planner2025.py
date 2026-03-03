@@ -41,7 +41,9 @@ def check_login():
                 st.error("Utente non valido")
 
     st.stop()
+    
 st.set_page_config(page_title="Orderbook Generator", layout="wide")
+check_login()
 st.title("📘 Orderbook – Generatore da CSV")
 
 st.caption(
@@ -188,6 +190,7 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 
 
 
