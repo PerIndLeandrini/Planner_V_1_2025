@@ -1,261 +1,126 @@
 import streamlit as st
 import pandas as pd
-import hashlib
-import random
 from io import BytesIO
-from datetime import datetime, timedelta
 from openpyxl import load_workbook
+from datetime import datetime
+
+st.set_page_config(page_title="Orderbook Generator", layout="wide")
+st.title("📘 Orderbook – Generatore da CSV")
+
+st.caption(
+    "Carica il CSV (compilato) + il template Orderbook vuoto (solo intestazioni). "
+    "Ottieni l'Excel compilato e una preview online."
+)
 
 # -----------------------------
-# CONFIG COLONNE
+# Helpers
 # -----------------------------
-SHEET_TEMPLATE_INDEX = 0  # primo foglio dell'orderbook caricato
+def read_csv_flexible(uploaded_file) -> pd.DataFrame:
+    """
+    Legge CSV in modo tollerante:
+    - prova con ; poi con ,
+    - forza dtype=str
+    """
+    raw = uploaded_file.getvalue()
 
-# Colonne di scrittura nell'orderbook (Excel letters)
-OB_COL_DATA_OUT = "X"    # data stimata
-OB_COL_STATO_OUT = "AF"  # stato
-
-# Colonne usate per matchare (nel file orderbook cliente)
-OB_COL_MATERIALE = "A"
-OB_COL_ODA = "E"
-OB_COL_POS = "F"
-
-# Colonne richieste nel file upload (ORDINI_export)
-REQ_UPLOAD_COLS = ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD", "DATA_RICHIESTA"]
-
-
-# -----------------------------
-# AUTH
-# -----------------------------
-def check_login() -> bool:
-    st.sidebar.subheader("🔐 Login")
-    u = st.sidebar.text_input("Username")
-    p = st.sidebar.text_input("Password", type="password")
-
-    users = st.secrets.get("auth", {}).get("users", [])
-    pwds  = st.secrets.get("auth", {}).get("passwords", [])
-
-    if st.sidebar.button("Entra", use_container_width=True):
-        if u in users:
-            idx = users.index(u)
-            if idx < len(pwds) and p == pwds[idx]:
-                st.session_state["auth_ok"] = True
-            else:
-                st.sidebar.error("Password errata.")
-        else:
-            st.sidebar.error("Utente non valido.")
-    return st.session_state.get("auth_ok", False)
-
-# -----------------------------
-# UTILS
-# -----------------------------
-def stable_randint(seed_key: str, a: int, b: int) -> int:
-    h = hashlib.sha256(seed_key.encode("utf-8")).hexdigest()
-    seed = int(h[:8], 16)
-    rnd = random.Random(seed)
-    return rnd.randint(a, b)
-
-def parse_dt(x):
-    if x is None:
-        return None
-
-    # se arriva già Timestamp/Datetime
-    if isinstance(x, datetime):
-        return x
-
+    # prova separatore ;
     try:
-        dt = pd.to_datetime(x, errors="coerce", dayfirst=True)
+        df = pd.read_csv(BytesIO(raw), sep=";", dtype=str).fillna("")
+        if df.shape[1] > 1:
+            return df
     except Exception:
-        return None
+        pass
 
-    if pd.isna(dt):
-        return None
-
-    # Timestamp -> datetime
-    return dt.to_pydatetime()
+    # fallback separatore ,
+    df = pd.read_csv(BytesIO(raw), sep=",", dtype=str).fillna("")
+    return df
 
 
-def calc_eta_date(base_dt: datetime, stato: str, key: str) -> datetime:
-    s = (stato or "").strip().upper()
-
-    # ✅ allineamento: se APERTO, la promessa = DATA_RICHIESTA (nessun offset)
-    if s == "APERTO":
-        return base_dt
-
-    if s == "SALA METROLOGICA":
-        days = 7
-    elif s == "OUTSOURCING":
-        days = stable_randint(key, 10, 14)
-    elif s == "SCAFFALE":
-        days = stable_randint(key, 7, 15)
-    else:
-        days = stable_randint(key, 18, 30)
-
-    return base_dt + timedelta(days=int(days))
-
-
-def xl_cell(row_idx: int, col_letter: str) -> str:
-    return f"{col_letter}{row_idx}"
-
-def build_planner_map(df_ord: pd.DataFrame) -> dict:
-    df = df_ord.copy()
-
-    # normalizza
-    for c in ["CODICE", "ODA", "POS", "STATO", "DATA_PASSAGGIO_PRD", "DATA_RICHIESTA"]:
-        df[c] = df[c].astype(str).fillna("").str.strip()
-
-    df["_DT_PASSAGGIO"] = df["DATA_PASSAGGIO_PRD"].apply(parse_dt)
-    df["_DT_RICHIESTA"] = df["DATA_RICHIESTA"].apply(parse_dt)
-
-    planner_map = {}
-    for _, r in df.iterrows():
-        cod, oda, pos = r["CODICE"], r["ODA"], r["POS"]
-        if not (cod and oda and pos):
-            continue
-
-        stato = (r["STATO"] or "").strip()
-        stato_up = stato.upper()
-
-        # ✅ REGOLA: base_dt dipende dallo stato
-        if stato_up == "APERTO":
-            base_dt = r["_DT_RICHIESTA"]
-        else:
-            base_dt = r["_DT_PASSAGGIO"]
-
-        if base_dt is None or pd.isna(base_dt):
-            base_dt = datetime.now()
-
-        k = f"{cod}|{oda}|{pos}"
-        planner_map[k] = (stato, base_dt)
-
-    return planner_map
-
-def redigi_orderbook(orderbook_bytes: bytes, planner_map: dict):
+def fill_template_from_df(template_bytes: bytes, df: pd.DataFrame, sheet_index: int = 0) -> bytes:
     """
-    Prende l'orderbook del cliente (bytes), compila X e AF dove trova match su CODICE|ODA|POS,
-    restituisce (out_bytes, stats).
+    Riempie il template xlsx (vuoto) usando le intestazioni del template:
+    - legge la riga 1 come header del template
+    - scrive i dati da riga 2 in poi, allineando per nome colonna
     """
-    wb = load_workbook(BytesIO(orderbook_bytes))
-    ws = wb.worksheets[SHEET_TEMPLATE_INDEX]
+    wb = load_workbook(BytesIO(template_bytes))
+    ws = wb.worksheets[sheet_index]
 
-    updated = 0
-    no_match = 0
-    skipped = 0
+    # header template = riga 1
+    template_headers = []
+    col = 1
+    while True:
+        v = ws.cell(row=1, column=col).value
+        if v is None or str(v).strip() == "":
+            break
+        template_headers.append(str(v).strip())
+        col += 1
 
-    max_row = ws.max_row
+    if not template_headers:
+        raise ValueError("Il template non ha intestazioni in riga 1 (o sono vuote).")
 
-    for r in range(2, max_row + 1):
-        cod = norm_key_text(ws[xl_cell(r, OB_COL_MATERIALE)].value)
-        oda = norm_key_text(ws[xl_cell(r, OB_COL_ODA)].value)
-        pos = norm_key_text(ws[xl_cell(r, OB_COL_POS)].value)
+    # pulizia righe sotto header (se il template non è proprio vuoto)
+    if ws.max_row >= 2:
+        ws.delete_rows(2, ws.max_row - 1)
 
-        if not (cod and oda and pos):
-            skipped += 1
-            continue
+    # normalizza nomi colonna DF (strip)
+    df2 = df.copy()
+    df2.columns = [str(c).strip() for c in df2.columns]
 
-        k = f"{cod}|{oda}|{pos}"
-        if k not in planner_map:
-            no_match += 1
-            continue
+    # scrittura dati: da riga 2
+    start_row = 2
+    n = len(df2)
 
-        stato, base_dt = planner_map[k]
-        # normalizza base_dt (può arrivare Timestamp o NaT)
-        if base_dt is None or pd.isna(base_dt):
-            base_dt = datetime.now()
-        elif not isinstance(base_dt, datetime):
-            base_dt = pd.to_datetime(base_dt, errors="coerce", dayfirst=True)
-            if pd.isna(base_dt):
-                base_dt = datetime.now()
-            else:
-                base_dt = base_dt.to_pydatetime()
-
-        if not base_dt:
-            base_dt = datetime.now()
-
-        seed_key = f"{k}|{stato}|{base_dt:%Y-%m-%d}"
-        target = calc_eta_date(base_dt, stato, seed_key)
-
-        ws[xl_cell(r, OB_COL_DATA_OUT)].value = target.strftime("%d/%m/%Y")
-        ws[xl_cell(r, OB_COL_STATO_OUT)].value = stato
-
-        updated += 1
+    for i in range(n):
+        r_excel = start_row + i
+        for j, h in enumerate(template_headers, start=1):
+            val = df2.at[i, h] if h in df2.columns else ""
+            ws.cell(row=r_excel, column=j, value="" if pd.isna(val) else str(val))
 
     out = BytesIO()
     wb.save(out)
-    return out.getvalue(), {
-        "updated": updated,
-        "no_match": no_match,
-        "skipped": skipped,
-        "rows": max_row - 1
-    }
+    return out.getvalue()
 
-def norm_key_text(x) -> str:
-    s = str(x or "").strip()
-    if s.endswith(".0"):
-        s = s[:-2]
-    return s
 
 # -----------------------------
 # UI
 # -----------------------------
-st.set_page_config(page_title="Orderbook Viewer", layout="wide")
-st.title("📘 Orderbook Viewer (Clienti)")
-
-if not check_login():
-    st.info("Effettua il login dalla sidebar.")
-    st.stop()
-
-st.success("✅ Accesso consentito.")
-
 c1, c2 = st.columns(2)
 with c1:
-    uploaded_ordini = st.file_uploader("📤 Upload 1 — Carica ORDINI_export.xlsx", type=["xlsx"], key="u_ord")
+    up_csv = st.file_uploader("📤 Carica CSV orderbook (compilato)", type=["csv"], key="csv")
 with c2:
-    uploaded_orderbook = st.file_uploader("📤 Upload 2 — Carica Orderbook cliente (.xlsx)", type=["xlsx"], key="u_ob")
+    up_tpl = st.file_uploader("📤 Carica template Orderbook vuoto (.xlsx)", type=["xlsx"], key="tpl")
 
-if not uploaded_ordini or not uploaded_orderbook:
+if not up_csv or not up_tpl:
     st.info("Carica entrambi i file per procedere.")
     st.stop()
 
-# ---- leggi ORDINI_export
+# Leggi CSV
 try:
-    df = pd.read_excel(uploaded_ordini, sheet_name="ORDINI", dtype=str).fillna("")
-except Exception:
-    df = pd.read_excel(uploaded_ordini, sheet_name=0, dtype=str).fillna("")
-
-missing = [c for c in REQ_UPLOAD_COLS if c not in df.columns]
-if missing:
-    st.error(f"File ORDINI_export non valido: mancano colonne {missing}")
+    df = read_csv_flexible(up_csv)
+except Exception as e:
+    st.error(f"Errore lettura CSV: {e}")
     st.stop()
 
-st.subheader("🔎 Anteprima ORDINI_export")
-st.dataframe(df.head(30), use_container_width=True)
+st.subheader("👀 Preview CSV")
+st.dataframe(df, use_container_width=True, hide_index=True)
 
-planner_map = build_planner_map(df)
-# KPI: quante righe senza data passaggio
-missing_dt = df["DATA_PASSAGGIO_PRD"].astype(str).str.strip().eq("").sum()
-st.info(f"📅 Righe con DATA_PASSAGGIO_PRD vuota: {missing_dt}")
+# KPI veloci (facoltativi)
+k1, k2 = st.columns(2)
+k1.metric("Righe CSV", len(df))
+k2.metric("Colonne CSV", df.shape[1])
 
-missing_drich = df.loc[df["STATO"].astype(str).str.strip().str.upper().eq("APERTO"), "DATA_RICHIESTA"] \
-    .astype(str).str.strip().eq("").sum()
-
-st.info(f"📌 Righe APERTO con DATA_RICHIESTA vuota: {missing_drich}")
 st.divider()
-st.subheader("🧾 Redigi Orderbook con i dati del Planner Aziedale")
 
-# bytes dell'orderbook cliente
-orderbook_bytes = uploaded_orderbook.getvalue()
-
-if st.button("🚀 Genera Orderbook compilato", use_container_width=True):
-    out_bytes, stats = redigi_orderbook(orderbook_bytes, planner_map)
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Righe aggiornate", stats["updated"])
-    k2.metric("Righe senza match", stats["no_match"])
-    k3.metric("Righe incomplete orderbook", stats["skipped"])
-    k4.metric("Righe totali", stats["rows"])
+if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
+    try:
+        out_bytes = fill_template_from_df(up_tpl.getvalue(), df, sheet_index=0)
+    except Exception as e:
+        st.error(f"Errore generazione Excel: {e}")
+        st.stop()
 
     fname = f"orderbook_compilato_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+
+    st.success("✅ Excel generato.")
     st.download_button(
         "⬇️ Scarica Orderbook compilato",
         data=out_bytes,
@@ -263,8 +128,3 @@ if st.button("🚀 Genera Orderbook compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
-
-
-
-
-
