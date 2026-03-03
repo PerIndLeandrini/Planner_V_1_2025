@@ -4,6 +4,43 @@ from io import BytesIO
 from openpyxl import load_workbook
 from datetime import datetime
 
+# -----------------------------
+# AUTH LOGIN
+# -----------------------------
+def check_login():
+    """Gestione login semplice via st.secrets"""
+
+    if "auth_ok" not in st.session_state:
+        st.session_state.auth_ok = False
+
+    if st.session_state.auth_ok:
+        return True
+
+    st.title("🔐 Accesso Orderbook")
+
+    with st.container(border=True):
+
+        username = st.text_input("Utente")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Accedi", use_container_width=True):
+
+            users = st.secrets.get("auth", {}).get("users", [])
+            pwds = st.secrets.get("auth", {}).get("passwords", [])
+
+            if username in users:
+                idx = users.index(username)
+
+                if idx < len(pwds) and password == pwds[idx]:
+                    st.session_state.auth_ok = True
+                    st.success("Accesso consentito ✅")
+                    st.rerun()
+                else:
+                    st.error("Password errata")
+            else:
+                st.error("Utente non valido")
+
+    st.stop()
 st.set_page_config(page_title="Orderbook Generator", layout="wide")
 st.title("📘 Orderbook – Generatore da CSV")
 
@@ -111,43 +148,7 @@ def fill_template_from_df(template_bytes: bytes, df: pd.DataFrame, sheet_index: 
     wb.save(out)
     return out.getvalue()
 
-# -----------------------------
-# AUTH LOGIN
-# -----------------------------
-def check_login():
-    """Gestione login semplice via st.secrets"""
 
-    if "auth_ok" not in st.session_state:
-        st.session_state.auth_ok = False
-
-    if st.session_state.auth_ok:
-        return True
-
-    st.title("🔐 Accesso Orderbook")
-
-    with st.container(border=True):
-
-        username = st.text_input("Utente")
-        password = st.text_input("Password", type="password")
-
-        if st.button("Accedi", use_container_width=True):
-
-            users = st.secrets.get("auth", {}).get("users", [])
-            pwds = st.secrets.get("auth", {}).get("passwords", [])
-
-            if username in users:
-                idx = users.index(username)
-
-                if idx < len(pwds) and password == pwds[idx]:
-                    st.session_state.auth_ok = True
-                    st.success("Accesso consentito ✅")
-                    st.rerun()
-                else:
-                    st.error("Password errata")
-            else:
-                st.error("Utente non valido")
-
-    st.stop()
 # -----------------------------
 # UI
 # -----------------------------
@@ -187,5 +188,6 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 
 
