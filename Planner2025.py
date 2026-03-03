@@ -101,14 +101,6 @@ except Exception as e:
     st.error(f"Errore lettura CSV: {e}")
     st.stop()
 
-st.subheader("👀 Preview CSV")
-st.dataframe(df, use_container_width=True, hide_index=True)
-
-# KPI veloci (facoltativi)
-k1, k2 = st.columns(2)
-k1.metric("Righe CSV", len(df))
-k2.metric("Colonne CSV", df.shape[1])
-
 st.divider()
 
 if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
@@ -128,3 +120,4 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
