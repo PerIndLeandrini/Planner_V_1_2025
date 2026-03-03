@@ -65,7 +65,7 @@ def check_login():
         st.markdown('<div class="login-box">', unsafe_allow_html=True)
 
         # 🔵 LOGO (metti il tuo file nella repo)
-        st.image("logo.png", width=70)   # <-- cambia nome se vuoi
+        st.image("logo.png", width=480)   # <-- cambia nome se vuoi
 
         st.markdown('<div class="login-title">Accesso Orderbook</div>', unsafe_allow_html=True)
         st.markdown('<div class="login-sub">Inserisci le credenziali per continuare</div>', unsafe_allow_html=True)
@@ -243,6 +243,7 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 
 
 
