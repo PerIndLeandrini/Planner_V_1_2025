@@ -77,60 +77,39 @@ def try_parse_date(val):
 
 def fill_template_from_df(template_bytes: bytes, df: pd.DataFrame, sheet_index: int = 0) -> bytes:
     """
-    Riempie il template xlsx (vuoto) usando le intestazioni del template:
-    - legge la riga 1 come header del template
-    - scrive i dati da riga 2 in poi, allineando per nome colonna
+    Scrive il contenuto del CSV nel template Excel:
+    - lascia intatta la riga 1 (intestazioni template)
+    - scrive i dati da A2 in poi
+    - mantiene formato date italiano
     """
+
     wb = load_workbook(BytesIO(template_bytes))
     ws = wb.worksheets[sheet_index]
 
-    # header template = riga 1
-    template_headers = []
-    col = 1
-    while True:
-        v = ws.cell(row=1, column=col).value
-        if v is None or str(v).strip() == "":
-            break
-        template_headers.append(str(v).strip())
-        col += 1
-
-    if not template_headers:
-        raise ValueError("Il template non ha intestazioni in riga 1 (o sono vuote).")
-
-    # pulizia righe sotto header (se il template non è proprio vuoto)
+    # pulisce eventuali righe sotto header
     if ws.max_row >= 2:
         ws.delete_rows(2, ws.max_row - 1)
 
-    # normalizza nomi colonna DF (strip)
-    df2 = df.copy()
-    df2.columns = [str(c).strip() for c in df2.columns]
-
-    # scrittura dati: da riga 2
     start_row = 2
-    n = len(df2)
+    start_col = 1  # colonna A
 
-    for i in range(n):
-        r_excel = start_row + i
-        for j, h in enumerate(template_headers, start=1):
-            val = df2.at[i, h] if h in df2.columns else ""
-            cell = ws.cell(row=r_excel, column=j)
+    for i, row in df.iterrows():
+        for j, val in enumerate(row, start=start_col):
 
-            raw = "" if pd.isna(val) else val
-            d = try_parse_date(raw)
+            cell = ws.cell(row=start_row + i, column=j)
+
+            # --- gestione date ---
+            d = try_parse_date(val)
 
             if d is not None:
-                # scrivo come DATA vera (niente orario) + formato italiano
                 cell.value = d
                 cell.number_format = "DD/MM/YYYY"
             else:
-                # scrivo come testo normale
-                cell.value = "" if raw is None else str(raw)
+                cell.value = "" if pd.isna(val) else str(val)
 
-                out = BytesIO()
-                wb.save(out)
-                return out.getvalue()
-
-
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
 # -----------------------------
 # UI
 # -----------------------------
@@ -170,3 +149,4 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
