@@ -35,6 +35,45 @@ def read_csv_flexible(uploaded_file) -> pd.DataFrame:
     df = pd.read_csv(BytesIO(raw), sep=",", dtype=str).fillna("")
     return df
 
+import re
+from datetime import date
+
+DATE_FMT_ITA = "%d/%m/%Y"
+
+def try_parse_date(val):
+    """
+    Ritorna un datetime.date se val è una data riconoscibile, altrimenti None.
+    Gestisce:
+    - 'dd/mm/yyyy'
+    - 'yyyy-mm-dd'
+    - 'yyyy-mm-dd hh:mm:ss'
+    """
+    if val is None:
+        return None
+
+    s = str(val).strip()
+    if not s:
+        return None
+
+    # Caso già in formato ITA dd/mm/yyyy
+    try:
+        dt = datetime.strptime(s[:10], DATE_FMT_ITA)
+        return dt.date()
+    except Exception:
+        pass
+
+    # Caso ISO yyyy-mm-dd (con o senza ora)
+    # es: 2026-06-27 oppure 2026-06-27 00:00:00
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        try:
+            dt = pd.to_datetime(s, errors="coerce")
+            if pd.isna(dt):
+                return None
+            return dt.date()
+        except Exception:
+            return None
+
+    return None
 
 def fill_template_from_df(template_bytes: bytes, df: pd.DataFrame, sheet_index: int = 0) -> bytes:
     """
@@ -74,11 +113,22 @@ def fill_template_from_df(template_bytes: bytes, df: pd.DataFrame, sheet_index: 
         r_excel = start_row + i
         for j, h in enumerate(template_headers, start=1):
             val = df2.at[i, h] if h in df2.columns else ""
-            ws.cell(row=r_excel, column=j, value="" if pd.isna(val) else str(val))
+            cell = ws.cell(row=r_excel, column=j)
 
-    out = BytesIO()
-    wb.save(out)
-    return out.getvalue()
+            raw = "" if pd.isna(val) else val
+            d = try_parse_date(raw)
+
+            if d is not None:
+                # scrivo come DATA vera (niente orario) + formato italiano
+                cell.value = d
+                cell.number_format = "DD/MM/YYYY"
+            else:
+                # scrivo come testo normale
+                cell.value = "" if raw is None else str(raw)
+
+                out = BytesIO()
+                wb.save(out)
+                return out.getvalue()
 
 
 # -----------------------------
@@ -120,4 +170,3 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
-
