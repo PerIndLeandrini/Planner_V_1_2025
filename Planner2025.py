@@ -48,8 +48,8 @@ def check_login():
         }
 
         .logo-img {
-            width: 70px;
-            margin-bottom: 10px;
+            width: 470px;
+            margin-bottom: 25px;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -243,6 +243,7 @@ if st.button("🚀 Genera Orderbook Excel compilato", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 
 
 
